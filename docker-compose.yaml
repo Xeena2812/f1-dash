@@ -37,6 +37,7 @@ x-airflow-common:
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW_CONN_ERGAST_DW_POSTGRES: postgres://airflow:airflow@postgres/ergast_dw
+    AIRFLOW_CONN_FASTF1_DW_POSTGRES: postgres://airflow:airflow@postgres/fastf1_dw
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'true'
@@ -57,6 +58,8 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/plugins:/opt/airflow/plugins
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/tmp:/opt/airflow/tmp
     - ${AIRFLOW_PROJ_DIR:-.}/ergast:/opt/ergast
+    - ${AIRFLOW_PROJ_DIR:-.}/fastf1-data:/opt/fastf1-data
+    - ${AIRFLOW_PROJ_DIR:-.}/fastf1-cache:/opt/fastf1-cache
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     # redis:
@@ -72,6 +75,8 @@ services:
       POSTGRES_USER: airflow
       POSTGRES_PASSWORD: airflow
       POSTGRES_DB: airflow
+    ports:
+      - 5432:5432
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
       - ./postgres-init-scripts:/docker-entrypoint-initdb.d
@@ -88,7 +93,7 @@ services:
       PGADMIN_DEFAULT_EMAIL: test@test.com
       PGADMIN_DEFAULT_PASSWORD: test1234
     ports:
-      - "5050:80"
+      - 5050:80
     depends_on:
       - postgres
   airflow-apiserver:

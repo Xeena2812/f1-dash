@@ -1,1 +1,2 @@
 CREATE DATABASE ergast_dw;
+CREATE DATABASE fastf1_dw;
