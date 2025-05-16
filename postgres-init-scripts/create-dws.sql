@@ -1,0 +1,1 @@
+CREATE DATABASE ergast_dw;
