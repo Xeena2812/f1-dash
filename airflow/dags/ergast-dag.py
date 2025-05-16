@@ -12,8 +12,7 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 ERGAST_FOLDER = "/opt/ergast"
 TMP_FOLDER = "/opt/airflow/tmp/ergast"
-ERGAST_DW_CONN_ID = "postgresql+psycopg2://airflow:airflow@postgres/ergast_dw"
-# ERGAST_DW_CONN_ID = "ergast_dw_postgres"
+ERGAST_DW_CONN_ID = "ergast_dw_postgres"
 
 # Telemetry data is available from 2018 in the FastF1 API, but 2025 is not available in Ergast, so skip it.
 MIN_YEAR = 2018
@@ -106,26 +105,26 @@ def load_cleaned_data_to_postgres_callable(**kwargs):
 FILTER_DATA_SQL = "\n".join([
 	f"DELETE FROM {table} WHERE raceid IN (SELECT raceid FROM races WHERE year < {MIN_YEAR} OR year > {MAX_YEAR});"
 	for table in [
-		"results", "qualifying", "laptimes", "pitstops",
-		"driverstandings", "constructorstandings", "sprintresults"
+		"results", "qualifying", "lap_times", "pit_stops",
+		"driver_standings", "constructor_standings", "sprint_results"
 	]
 ] + [
 	f"DELETE FROM races WHERE year < {MIN_YEAR} OR year > {MAX_YEAR};",
 	f"DELETE FROM seasons WHERE year < {MIN_YEAR} OR year > {MAX_YEAR};"
 ])
 
-# --- DAG Definition ---
+
 with DAG(
     dag_id='Ergast_ETL',
     default_args={
         "depends_on_past": False,
         "retries": 1,
-        "retry_delay": timedelta(seconds=30),
+        "retry_delay": timedelta(seconds=10),
     },
     description='Loads Ergast data, drops rows with nulls, recreates DB, loads to DB, then filters by year in DB using SQL.',
     start_date=datetime(2025, 1, 1),
     catchup=True,
-	schedule='@once', # To run when airflow is set up
+	schedule=None, # To run when airflow is set up
 ) as dag:
 
     setup_task = PythonOperator(
@@ -138,10 +137,10 @@ with DAG(
         python_callable=extract_csv_to_parquet_callable,
     )
 
-    clean_nulls_task = PythonOperator(
-        task_id="clean_missing_data_task",
-        python_callable=clean_missing_data_callable,
-    )
+    # clean_nulls_task = PythonOperator(
+    #     task_id="clean_missing_data_task",
+    #     python_callable=clean_missing_data_callable,
+    # )
 
     load_to_db_task = PythonOperator(
         task_id="load_cleaned_data_to_postgres_task",
@@ -154,4 +153,5 @@ with DAG(
         sql=FILTER_DATA_SQL,
     )
 
-    setup_task >> extract_task >> clean_nulls_task >> load_to_db_task >> filter_in_db_task
+    setup_task >> extract_task >> load_to_db_task >> filter_in_db_task
+    # setup_task >> extract_task >> clean_nulls_task >> load_to_db_task >> filter_in_db_task
