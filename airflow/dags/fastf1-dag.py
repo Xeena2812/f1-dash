@@ -160,8 +160,7 @@ def load_data_to_postgres_callable(**context):
                 con=engine,
                 if_exists='replace',
                 index=False,
-                chunksize=1000,
-                method='multi'
+                chunksize=10000,
             )
             logging.info(f"Loaded data into {table_name} (if_exists=replace).")
         except Exception as e:

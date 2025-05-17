@@ -93,6 +93,7 @@ def load_hourly_data_to_postgres(**kwargs):
         try:
             df = pd.read_csv(filepath, compression='gzip', header=0, names=hourly_columns)
             df['date'] = pd.to_datetime(df['date'])
+            df['station_id'] = filepath.split('.')[0].split('/')[-1]
             all_hourly_data.append(df)
         except Exception as e:
             logging.warning(f"Could not process file {filepath}: {e}")

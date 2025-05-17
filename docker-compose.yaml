@@ -269,3 +269,4 @@ services:
 
 volumes:
   postgres-db-volume:
+    - postgres-volume:/var/lib/postgresql/data
