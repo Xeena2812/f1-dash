@@ -125,8 +125,9 @@ with DAG(
     },
     description='Loads Ergast data, drops rows with nulls, recreates DB, loads to DB, then filters by year in DB using SQL.',
     start_date=datetime(2025, 1, 1),
+    # backfill=True,
     catchup=True,
-	schedule=None, # To run when airflow is set up
+	schedule='@once', # To run when airflow is set up
     is_paused_upon_creation=False,
 ) as dag:
 

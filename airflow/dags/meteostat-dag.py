@@ -1,8 +1,9 @@
 import os
-import pendulum
 import requests
 import pandas as pd
 import logging
+import json
+import meteostat
 from datetime import datetime, timedelta
 from airflow.models.dag import DAG
 from airflow.operators.python import PythonOperator
@@ -12,58 +13,43 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 TEMP_DIR = "/opt/airflow/tmp/meteostat"
 STATIONS_GZ_FILE_PATH = f"{TEMP_DIR}/stations_full.json.gz"
 HOURLY_DATA_URL_TEMPLATE = "https://bulk.meteostat.net/v2/hourly/{station_id}.csv.gz"
-METEOSTAT_DW_CONN_ID = "postgres_default"
-ERGAST_DW_CONN_ID = "ergast_dw_conn_id"
+METEOSTAT_DW_CONN_ID = "meteostat_dw_postgres"
+ERGAST_DW_CONN_ID = "ergast_dw_postgres"
 
-def _load_stations_to_postgres():
-    df = pd.read_json(STATIONS_GZ_FILE_PATH[:-3])
-    hook = PostgresHook(METEOSTAT_DW_CONN_ID)
+def load_stations_to_postgres():
+    with open(STATIONS_GZ_FILE_PATH[:-3], 'r') as f:
+        stations_data = json.load(f)
+
+    df = pd.json_normalize(stations_data)
+    hook = PostgresHook(postgres_conn_id=METEOSTAT_DW_CONN_ID)
     engine = hook.get_sqlalchemy_engine()
-    df.to_sql('weather_stations', engine, if_exists='replace', index=False)
+    df.to_sql(name='weather_stations', con=engine, if_exists='replace', index=False)
 
 
-def _find_closest_stations(**kwargs):
-    target_hook = PostgresHook(METEOSTAT_DW_CONN_ID)
-
+def find_closest_stations(**kwargs):
+    ergast_hook = PostgresHook(postgres_conn_id=ERGAST_DW_CONN_ID)
     sql_query = f"""
-    SELECT
-        c."circuitId",
-        ws.id AS closest_station_id,
-        ST_Distance(
-            ST_MakePoint(c.lng, c.lat)::geography,
-            ST_MakePoint(ws.longitude, ws.latitude)::geography
-        ) AS distance_meters
-    FROM
-        circuits c,
-        LATERAL (
-            SELECT ws2.id, ws2.latitude, ws2.longitude
-            FROM weather_stations ws2
-            ORDER BY
-                ST_Distance(
-                    ST_MakePoint(c.lng, c.lat)::geography,
-                    ST_MakePoint(ws2.longitude, ws2.latitude)::geography
-                )
-            LIMIT 1
-        ) ws;
+    SELECT c.circuitid, c.name, c.lat, c.lng FROM circuits c
     """
-    closest_stations_df = target_hook.get_pandas_df(sql_query)
+    circuits = ergast_hook.get_pandas_df(sql_query)
+    stations = meteostat.Stations()
+    station_ids = []
+    print(circuits.shape)
+    for _, circuit in circuits.iterrows():
+        nearby_stations = stations.nearby(circuit['lat'], circuit['lng'])
+        closest_station = nearby_stations.fetch(1)
+        station_ids.append(closest_station.index[0])
 
-    if not closest_stations_df.empty:
-        closest_stations_df.to_sql(
-            'circuit_closest_stations',
-            target_hook.get_sqlalchemy_engine(),
-            if_exists='replace',
-            index=False
-        )
-        station_ids = closest_stations_df['closest_station_id'].unique().tolist()
-        kwargs['ti'].xcom_push(key='station_ids', value=station_ids)
+    print(station_ids)
+    kwargs['ti'].xcom_push(key='station_ids', value=station_ids)
+    return station_ids
 
 
-def _download_hourly_data(**kwargs):
+def download_hourly_data(**kwargs):
     downloaded_files = []
     os.makedirs(TEMP_DIR, exist_ok=True)
-    station_ids = kwargs['ti'].xcom_pull(task_ids='_find_closest_stations', key='station_ids')
-
+    station_ids = kwargs['ti'].xcom_pull(task_ids='find_closest_stations', key='station_ids')
+    print("Station_ids:", station_ids)
     if not station_ids:
         logging.warning("No station IDs provided for download.")
 
@@ -71,6 +57,9 @@ def _download_hourly_data(**kwargs):
         url = HOURLY_DATA_URL_TEMPLATE.format(station_id=station_id)
         filename = f"{station_id}.csv.gz"
         filepath = os.path.join(TEMP_DIR, filename)
+        if os.path.exists(filepath):
+            downloaded_files.append(filepath)
+            continue
 
         try:
             response = requests.get(url, stream=True)
@@ -87,9 +76,9 @@ def _download_hourly_data(**kwargs):
     kwargs['ti'].xcom_push(key='downloaded_files', value=downloaded_files)
 
 
-def _load_hourly_data_to_postgres(**kwargs):
+def load_hourly_data_to_postgres(**kwargs):
     all_hourly_data = []
-    downloaded_files = kwargs['ti'].xcom_pull(task_ids='_download_hourly_data', key='downloaded_files')
+    downloaded_files = kwargs['ti'].xcom_pull(task_ids='download_hourly_data', key='downloaded_files')
 
     if not downloaded_files:
         logging.warning("No files provided for loading hourly data.")
@@ -113,20 +102,20 @@ def _load_hourly_data_to_postgres(**kwargs):
         return
 
     combined_df = pd.concat(all_hourly_data, ignore_index=True)
-    combined_df = combined_df[['date' > datetime(2018, 1, 1) & 'date' < datetime(2024, 12, 31)]]
-    hook = PostgresHook(METEOSTAT_DW_CONN_ID)
+    combined_df = combined_df[(combined_df['date'] > datetime(2018, 1, 1)) & (combined_df['date'] < datetime(2024, 12, 31))]
+    hook = PostgresHook(postgres_conn_id=METEOSTAT_DW_CONN_ID)
     engine = hook.get_sqlalchemy_engine()
     combined_df.to_sql('weather_data', engine, if_exists='replace', index=False, chunksize=10000)
 
 
 with DAG(
     dag_id='Meteostat_ETL',
-	default_args={
+    default_args={
         "depends_on_past": False,
         "retries": 1,
         "retry_delay": timedelta(seconds=10),
     },
- 	start_date=pendulum.datetime(2023, 1, 1, tz="UTC"),
+     start_date=datetime(2025, 1, 1),
     catchup=False,
     schedule=None,
     is_paused_upon_creation=False,
@@ -144,22 +133,22 @@ with DAG(
 
     load_stations_task = PythonOperator(
         task_id='load_stations_to_postgres',
-        python_callable=_load_stations_to_postgres
+        python_callable=load_stations_to_postgres
     )
 
     find_closest_stations_task = PythonOperator(
         task_id='find_closest_stations',
-        python_callable=_find_closest_stations,
+        python_callable=find_closest_stations,
     )
 
     download_hourly_data_task = PythonOperator(
         task_id='download_hourly_data',
-        python_callable=_download_hourly_data,
+        python_callable=download_hourly_data,
     )
 
     load_hourly_data_task = PythonOperator(
         task_id='load_hourly_data_to_postgres',
-        python_callable=_load_hourly_data_to_postgres,
+        python_callable=load_hourly_data_to_postgres,
     )
 
     download_stations_gz >> unzip_stations_gz >> load_stations_task >> find_closest_stations_task >> download_hourly_data_task >> load_hourly_data_task
