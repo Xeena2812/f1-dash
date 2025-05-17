@@ -4,10 +4,12 @@ from datetime import datetime, timedelta
 import logging
 import fastf1
 import time
+import glob
 
 import pandas as pd
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.bash_operator import BashOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.exceptions import AirflowSkipException
 from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -16,200 +18,181 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 FASTF1_FOLDER = "/opt/fastf1-data"
 FASTF1_CACHE_FOLDER = "/opt/fastf1-cache"
 TMP_FOLDER = "/opt/airflow/tmp/fastf1"
-ERGAST_DW_CONN_ID = "fastf1_dw_postgres"
+FASTF1_DW_CONN_ID = "fastf1_dw_postgres"
 
 # Telemetry data is available from 2018 in the FastF1 API, but 2025 is not available in Ergast, so skip it.
 MIN_YEAR = 2018
 MAX_YEAR = 2024
 
-XCOM_FILES_KEY = "processed_files_info"
-"""
-def setup_directories_callable():
-    if os.path.exists(TMP_FOLDER):
-        shutil.rmtree(TMP_FOLDER)
-    os.makedirs(TMP_FOLDER, exist_ok=True)
-    if not os.path.exists(FASTF1_FOLDER) or not os.listdir(FASTF1_FOLDER):
-        raise FileNotFoundError(f"ERGAST_FOLDER {FASTF1_FOLDER} not found or empty.")
-    logging.info(f"Directories ready. TMP_FOLDER: {TMP_FOLDER}")
+def get_telemetry_and_lap_data_callable(**context):
+    SESSIONS_TO_GET = ['FP1', 'FP2', 'FP3', 'Q', 'S', 'SQ', 'R']
 
-def extract_csv_to_parquet_callable(**kwargs):
-    processed_files_info = []
-    for filename in os.listdir(FASTF1_FOLDER):
-        if filename.lower().endswith(".csv"):
-            table_name = os.path.splitext(filename)[0].lower()
-            csv_path = os.path.join(FASTF1_FOLDER, filename)
-            parquet_path = os.path.join(TMP_FOLDER, f"{table_name}.parquet")
-            try:
-                df = pd.read_csv(csv_path, keep_default_na=True, na_values=['\\N', 'NA', 'N/A', ''])
-                df.columns = [col.lower().replace(' ', '_').replace('.', '_') for col in df.columns]
-                df.to_parquet(parquet_path, index=False)
-                processed_files_info.append({"table_name": table_name, "parquet_path": parquet_path})
-            except Exception as e:
-                logging.error(f"Error processing {filename} to Parquet: {e}")
-                raise
+    try:
+        fastf1.Cache.enable_cache(FASTF1_CACHE_FOLDER)
+        logging.info(f"FastF1 cache enabled at: {FASTF1_CACHE_FOLDER}")
+    except Exception as e:
+        logging.error(f"Error enabling FastF1 cache: {e}")
 
-    if not processed_files_info:
-        raise AirflowSkipException("No CSV files found to process.")
-    kwargs['ti'].xcom_push(key=XCOM_FILES_KEY, value=processed_files_info)
-    logging.info(f"Extracted {len(processed_files_info)} files to Parquet.")
-"""
-def get_data_for_weekend_callable(**context):
-	SESSIONS_TO_GET = ['FP1', 'FP2', 'FP3', 'Q', 'S', 'SQ', 'R']
+    os.makedirs(FASTF1_FOLDER, exist_ok=True)
+    logging.info(f"CSV data will be saved in: {FASTF1_FOLDER}")
 
-	try:
-		fastf1.Cache.enable_cache(FASTF1_CACHE_FOLDER)
-		logging.info(f"FastF1 cache enabled at: {FASTF1_CACHE_FOLDER}")
-	except Exception as e:
-		logging.error(f"Error enabling FastF1 cache: {e}")
+    dag_run = context["dag_run"]
+    conf = dag_run.conf
 
-	os.makedirs(FASTF1_FOLDER, exist_ok=True)
-	logging.info(f"CSV data will be saved in: {FASTF1_FOLDER}")
+    print("Data from conf:", conf.get("data"))
+    year = conf.get("year")
+    round = conf.get("round")
+    name = conf.get("name")
 
-	dag_run = context["dag_run"]
-	conf = dag_run.conf
+    event = fastf1.get_event(year, round)
+    print(event["EventName"])
+    event_name = event['EventName']
+    event_round = event['RoundNumber']
+    logging.info(f"Processing Event: {year} - Round {event_round} - {event_name}")
 
-	print("Data from conf:", conf.get("data"))
+    lap_dfs = []
+    for session_name in SESSIONS_TO_GET:
+        logging.debug(f"Attempting Session: {session_name}")
+        session_identifier = f"{year}_{event_round:02d}_{event_name}_{session_name}"
 
+        try:
+            session = fastf1.get_session(year, event_name, session_name)
 
-"""
+            session.load(laps=True, weather=True, messages=True, telemetry=True)
+            logging.info(f"Loaded basic data for {session_identifier}")
 
-def get_data_from_api(**kwargs):
-	SESSIONS_TO_GET = ['FP1', 'FP2', 'FP3', 'Q', 'S', 'SQ', 'R'] # Common sessions (Sprint='S', Sprint Quali='SQ')
-	DELAY_SECONDS = 1
- # Delay between processing sessions to be polite to API
-	try:
-		fastf1.Cache.enable_cache(FASTF1_CACHE_FOLDER)
-		logging.info(f"FastF1 cache enabled at: {FASTF1_CACHE_FOLDER}")
-	except Exception as e:
-		logging.error(f"Error enabling FastF1 cache: {e}")
+            # precise telemetry is in car_data, pos_data, etc.
+            # Check https://docs.fastf1.dev/core.html#fastf1.core.Session for more info
+            os.makedirs(TMP_FOLDER, exist_ok=True)
 
-	os.makedirs(FASTF1_FOLDER, exist_ok=True)
-	logging.info(f"CSV data will be saved in: {FASTF1_FOLDER}")
+            if hasattr(session, 'laps') and not session.laps.empty:
+                lap_dfs.append(session.laps)
+                logging.debug(f"Saved laps for {session_identifier}")
 
+                sess_tel_dfs = []
+                telemetry_saved = False
+                for drv_id in session.drivers:
+                    try:
+                        drv_laps = session.laps.pick_drivers(drv_id)
+                        if not drv_laps.empty:
+                            drv_abbr = drv_laps['Driver'].iloc[0]
+                            drv_tel = drv_laps.get_telemetry()
 
-	for year in range(MIN_YEAR, MAX_YEAR + 1):
-		logging.debug(f"--- Processing Year: {year} ---", )
-		try:
-			schedule = fastf1.get_event_schedule(year)
-			# Convert EventDate to datetime objects to filter past events if needed
-			# schedule['EventDate'] = pd.to_datetime(schedule['EventDate']).dt.date
-			# schedule = schedule[schedule['EventDate'] < datetime.now().date()] # Optional: Only process past events
+                            if not drv_tel.empty:
+                                drv_tel = drv_tel.merge(drv_laps[['LapNumber', 'Time']], on='Time', how='left')
+                                drv_tel['DriverId'] = drv_id
+                                drv_tel['Year'] = year
+                                drv_tel['Round'] = event_round
+                                drv_tel['Session'] = session
 
-		except Exception as e:
-			logging.error(f"Could not get event schedule for {year}: {e}")
-			continue
+                                sess_tel_dfs.append(drv_tel)
+                                logging.debug(f"Saved telemetry for driver {drv_abbr} in {session_identifier} with shape {drv_tel.shape}")
+                                telemetry_saved = True
+                            else:
+                                logging.debug(f"No telemetry data returned for driver {drv_abbr} in {session_identifier}")
+                    except Exception as tel_ex:
+                        logging.warning(f"Could not get/save telemetry for driver {drv_id} in {session_identifier}: {tel_ex}")
+                if telemetry_saved:
+                    logging.info(f"Finished processing telemetry for {session_identifier}")
+                else:
+                    logging.info(f"No telemetry saved for any driver in {session_identifier}")
 
-		for index, event in schedule.iterrows():
-			event_name = event['EventName']
-			event_round = event['RoundNumber']
-			logging.info(f"Processing Event: {year} - Round {event_round} - {event_name}")
+                sess_tel_dfs_concat = pd.concat(sess_tel_dfs, ignore_index=True)
+                sess_tel_dfs_concat.to_csv(os.path.join(TMP_FOLDER, f'telemetry_{session_identifier}.csv'))
+        except Exception as e:
+            pass
 
-			for session_name in SESSIONS_TO_GET:
-				logging.debug(f"Attempting Session: {session_name}")
-				session_identifier = f"{year}_{event_round:02d}_{event_name}_{session_name}" # Unique ID for logging/paths
-				session_save_path = os.path.join(SAVE_DIR, str(year), f"{event_round:02d}_{event_name}", session_name)
+    sess_lap_dfs_concat = pd.concat(lap_dfs, ignore_index=True)
+    sess_lap_dfs_concat.to_csv(os.path.join(TMP_FOLDER, f"laps_{year}_{round}.csv"))
 
-				# # Check if all expected CSVs exist for this session, skip if so
-				# expected_files = ['laps.csv', 'results.csv', 'weather.csv', 'messages.csv']
-				# csvs_exist = all(os.path.exists(os.path.join(session_save_path, fname)) for fname in expected_files)
+def normalize_telemetry_callable(**context):
+    dag_run = context["dag_run"]
+    conf = dag_run.conf
 
-				# # Check for at least one telemetry file (since driver list may change)
-				# telemetry_files_exist = any(
-				#     fname.startswith('telemetry_') and fname.endswith('.csv')
-				#     for fname in os.listdir(session_save_path) if os.path.isdir(session_save_path)
-				# ) if os.path.isdir(session_save_path) else False
+    year = conf.get("year")
+    round = conf.get("round")
+    name = conf.get("name")
 
-				# if csvs_exist and telemetry_files_exist:
-				#     logging.info(f"All CSVs already exist for {session_identifier}, skipping session.")
-				#     continue
-				try:
-					session = fastf1.get_session(year, event_name, session_name)
+    telemetry_files = glob.glob(os.path.join(TMP_FOLDER, 'telemetry_*.csv'))
+    tel_dfs = []
 
-					session.load(laps=True, weather=True, messages=True, telemetry=True)
-					logging.info(f"Loaded basic data for {session_identifier}")
+    for tel_file in telemetry_files:
+        try:
+            tel_file_split = os.path.splitext(os.path.basename(tel_file))[0].split('_')
+            if int(tel_file_split[1]) == year and int(tel_file_split[2]) == round:
+                df_tel = pd.read_csv(tel_file)
+                tel_dfs.append(df_tel)
 
-					os.makedirs(session_save_path, exist_ok=True)
+        except Exception as e:
+            logging.warning(f"Could not normalize telemetry file {tel_file}: {e}")
 
-					if hasattr(session, 'laps') and not session.laps.empty:
-						session.laps.to_csv(os.path.join(session_save_path, 'laps.csv'), index=False)
-						logging.debug(f"Saved laps for {session_identifier}")
+    df_concat = pd.concat(tel_dfs, ignore_index=True)
+    df_concat.drop(df_concat.columns[[0]], axis=1, inplace=True)
+    df_concat.to_csv(os.path.join(TMP_FOLDER, f'telemetry_{year}_{round}.csv'))
 
-						logging.info(f"Loading telemetry for {session_identifier}...")
-						telemetry_saved = False
-						for drv_id in session.drivers: # Iterate through driver numbers
-							try:
-								drv_laps = session.laps.pick_drivers(drv_id)
-								if not drv_laps.empty:
-									drv_abbr = drv_laps['Driver'].iloc[0]
-									drv_tel = drv_laps.get_telemetry()
+    logging.info(f"Normalized telemetry saved for {name} with shape {df_concat.shape}")
 
-									if not drv_tel.empty:
-										drv_tel = drv_tel.merge(drv_laps[['LapNumber', 'SessionTime']], on='SessionTime', how='left')
+def load_data_to_postgres_callable(**context):
+    dag_run = context["dag_run"]
+    conf = dag_run.conf
 
-										drv_tel.to_csv(os.path.join(session_save_path, f'telemetry_{drv_abbr}.csv'), index=False)
-										logging.debug(f"Saved telemetry for driver {drv_abbr} in {session_identifier}")
-										telemetry_saved = True
-									else:
-										logging.debug(f"No telemetry data returned for driver {drv_abbr} in {session_identifier}")
+    year = conf.get("year")
+    round = conf.get("round")
+    name = conf.get("name")
 
-							except Exception as tel_ex:
-								logging.warning(f"Could not get/save telemetry for driver {drv_id} in {session_identifier}: {tel_ex}")
-						if telemetry_saved:
-							logging.info(f"Finished processing telemetry for {session_identifier}")
-						else:
-							logging.info(f"No telemetry saved for any driver in {session_identifier}")
+    temp_csvs = [f"{year}_{round}_laps.csv", f"telemetry_{year}_{round}.csv"]
 
+    pg_hook = PostgresHook(postgres_conn_id=FASTF1_DW_CONN_ID)
+    engine = pg_hook.get_sqlalchemy_engine()
 
-					if hasattr(session, 'results') and not session.results.empty:
-						session.results.to_csv(os.path.join(session_save_path, 'results.csv'), index=False)
-						logging.debug(f"Saved results for {session_identifier}")
+    for csv_name in temp_csvs:
+        table_name = csv_name.split('_')[0]
 
-					if hasattr(session, 'weather_data') and not session.weather_data.empty:
-						session.weather_data.to_csv(os.path.join(session_save_path, 'weather.csv'), index=False)
-						logging.debug(f"Saved weather for {session_identifier}")
+        try:
+            df = pd.read_csv(os.path.join(TMP_FOLDER, csv_name))
 
-					if hasattr(session, 'messages') and not session.messages.empty:
-						session.messages.to_csv(os.path.join(session_save_path, 'messages.csv'), index=False)
-						logging.debug(f"Saved messages for {session_identifier}")
-
-					logging.info(f"Successfully processed and saved data for {session_identifier}")
-
-				# except fastf1.core.SessionNotAvailableError:
-				#      logging.warning(f"Session {session_name} not available or does not exist for {year} {event_name}. Skipping.")
-				except fastf1.core.DataNotLoadedError as e:
-					logging.error(f"Data not loaded for {session_identifier}. Might be too recent or unavailable. Error: {e}")
-				except ConnectionError as e:
-					logging.error(f"Connection error during {session_identifier}: {e}. Check network.")
-					time.sleep(10) # Longer sleep on connection error
-				except Exception as e:
-					# Catch other potential errors (API issues, unexpected data format, etc.)
-					logging.error(f"An unexpected error occurred for {session_identifier}: {e.__class__.__name__} - {e}")
-
-				finally:
-					# Add a delay after processing each session regardless of success/failure
-					logging.debug(f"Waiting {DELAY_SECONDS} seconds before next session...")
-					time.sleep(DELAY_SECONDS)
-
-		logging.info(f"--- Finished Processing Year: {year} ---")
-
-	logging.info("--- All Years Processed ---")
-"""
+            df.to_sql(
+                name=table_name,
+                con=engine,
+                if_exists='replace',
+                index=False,
+                chunksize=1000
+            )
+            logging.info(f"Loaded data into {table_name} (if_exists=replace).")
+        except Exception as e:
+            logging.error(f"Error loading data into {table_name}: {e}")
+            raise
 
 
 with DAG(
-	'FastF1_ETL',
+    'FastF1_ETL',
     default_args={
         "depends_on_past": False,
         "retries": 1,
         "retry_delay": timedelta(seconds=10),
     },
     description='Gets data for a selected weekend from the FastF1 API',
-	schedule=None,
-	catchup=False,
-	start_date=datetime(2025, 1, 1), # Has to be earlier than the logical/execution_date of the POST request.
+    schedule=None,
+    catchup=False,
+    start_date=datetime(2025, 1, 1), # Has to be earlier than the logical/execution_date of the POST request.
 ) as dag:
     get_data_for_weekend_task = PythonOperator(
-		task_id="get_data_for_weekend_task",
-		python_callable=get_data_for_weekend_callable,
-		# provide_context=True,
-	)
+        task_id="get_data_for_weekend_task",
+        python_callable=get_telemetry_and_lap_data_callable,
+    )
+    normalize_telemetry_task = PythonOperator(
+        task_id="normalize_telemetry_task",
+        python_callable=normalize_telemetry_callable,
+    )
+
+    load_to_db_task = PythonOperator(
+        task_id="load_cleaned_data_to_postgres_task",
+        python_callable=load_data_to_postgres_callable,
+    )
+
+    cleanup_task = cleanup_task = BashOperator(
+        task_id="cleanup_task",
+        bash_command=f'rm -rf {TMP_FOLDER}',
+    )
+
+    get_data_for_weekend_task >> normalize_telemetry_task >> load_to_db_task

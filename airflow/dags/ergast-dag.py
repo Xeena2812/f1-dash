@@ -6,6 +6,7 @@ import logging
 import pandas as pd
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.bash_operator import BashOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.exceptions import AirflowSkipException
 from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -153,5 +154,11 @@ with DAG(
         sql=FILTER_DATA_SQL,
     )
 
-    setup_task >> extract_task >> load_to_db_task >> filter_in_db_task
+    cleanup_task = cleanup_task = BashOperator(
+        task_id="cleanup_task",
+        bash_command=f'rm -rf {TMP_FOLDER}',
+    )
+
+
+    setup_task >> extract_task >> load_to_db_task >> filter_in_db_task >> cleanup_task
     # setup_task >> extract_task >> clean_nulls_task >> load_to_db_task >> filter_in_db_task
