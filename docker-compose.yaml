@@ -38,6 +38,7 @@ x-airflow-common:
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW_CONN_ERGAST_DW_POSTGRES: postgres://airflow:airflow@postgres/ergast_dw
     AIRFLOW_CONN_FASTF1_DW_POSTGRES: postgres://airflow:airflow@postgres/fastf1_dw
+    AIRFLOW_CONN_METEOSTAT_DW_POSTGRES: postgres://airflow:airflow@postgres/meteostat_dw
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'true'
@@ -60,6 +61,7 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/ergast:/opt/ergast
     - ${AIRFLOW_PROJ_DIR:-.}/fastf1-data:/opt/fastf1-data
     - ${AIRFLOW_PROJ_DIR:-.}/fastf1-cache:/opt/fastf1-cache
+    - ${AIRFLOW_PROJ_DIR:-.}/meteostat:/opt/meteostat
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     # redis:

@@ -1,2 +1,3 @@
 CREATE DATABASE ergast_dw;
 CREATE DATABASE fastf1_dw;
+CREATE DATABASE meteostat_dw;
