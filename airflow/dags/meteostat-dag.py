@@ -4,7 +4,7 @@ import pandas as pd
 import logging
 import json
 import meteostat
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from airflow.models.dag import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.standard.operators.bash import BashOperator
@@ -92,7 +92,7 @@ def load_hourly_data_to_postgres(**kwargs):
     for filepath in downloaded_files:
         try:
             df = pd.read_csv(filepath, compression='gzip', header=0, names=hourly_columns)
-            df['date'] = pd.to_datetime(df['date'])
+            df['date'] = pd.to_datetime(df['date']).dt.date
             df['station_id'] = filepath.split('.')[0].split('/')[-1]
             all_hourly_data.append(df)
         except Exception as e:
@@ -103,7 +103,8 @@ def load_hourly_data_to_postgres(**kwargs):
         return
 
     combined_df = pd.concat(all_hourly_data, ignore_index=True)
-    combined_df = combined_df[(combined_df['date'] > datetime(2018, 1, 1)) & (combined_df['date'] < datetime(2024, 12, 31))]
+    combined_df = combined_df[(combined_df['date'] > date(2018, 1, 1)) & (combined_df['date'] < date(2024, 12, 31))]
+    combined_df['date'] = pd.to_datetime(combined_df['date']).dt.strftime('%Y-%m-%d')
     hook = PostgresHook(postgres_conn_id=METEOSTAT_DW_CONN_ID)
     engine = hook.get_sqlalchemy_engine()
     combined_df.to_sql('weather_data', engine, if_exists='replace', index=False, chunksize=10000)

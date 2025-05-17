@@ -61,16 +61,19 @@ def clean_missing_data_callable(**kwargs):
         parquet_path = file_info["parquet_path"]
         try:
             df = pd.read_parquet(parquet_path)
-            if df.empty:
-                logging.info(f"Skipping null cleaning for {table_name} as it is empty.")
-                continue
+            if "time" in df.columns:
+                df["hour"] = pd.to_datetime(df["time"], format="%H:%M:%S", errors="coerce").dt.hour
+                print(df.columns)
+            # if df.empty:
+            #     logging.info(f"Skipping null cleaning for {table_name} as it is empty.")
+            #     continue
 
-            original_rows = len(df)
-            df.dropna(inplace=True)
-            cleaned_rows = len(df)
+            # original_rows = len(df)
+            # df.dropna(inplace=True)
+            # cleaned_rows = len(df)
 
             df.to_parquet(parquet_path, index=False)
-            logging.info(f"Cleaned nulls for {table_name} by dropping rows. Original: {original_rows}, Cleaned: {cleaned_rows}. Shape: {df.shape}")
+            logging.info(f"Cleaned data for {table_name}")
         except Exception as e:
             logging.error(f"Error cleaning data for {table_name}: {e}")
             raise
@@ -141,10 +144,10 @@ with DAG(
         python_callable=extract_csv_to_parquet_callable,
     )
 
-    # clean_nulls_task = PythonOperator(
-    #     task_id="clean_missing_data_task",
-    #     python_callable=clean_missing_data_callable,
-    # )
+    clean_nulls_task = PythonOperator(
+        task_id="clean_missing_data_task",
+        python_callable=clean_missing_data_callable,
+    )
 
     load_to_db_task = PythonOperator(
         task_id="load_cleaned_data_to_postgres_task",
@@ -168,6 +171,6 @@ with DAG(
         wait_for_completion=False,
     )
 
-    setup_task >> extract_task >> load_to_db_task >> filter_in_db_task >> cleanup_task
-    # setup_task >> extract_task >> clean_nulls_task >> load_to_db_task >> filter_in_db_task
+    # setup_task >> extract_task >> load_to_db_task >> filter_in_db_task >> cleanup_task
+    setup_task >> extract_task >> clean_nulls_task >> load_to_db_task >> filter_in_db_task >> cleanup_task
     load_to_db_task >> trigger_meteostat_etl_dag
