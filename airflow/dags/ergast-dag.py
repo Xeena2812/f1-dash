@@ -6,10 +6,11 @@ import logging
 import pandas as pd
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.providers.standard.operators.bash_operator import BashOperator
+from airflow.providers.standard.operators.bash import BashOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.exceptions import AirflowSkipException
 from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 ERGAST_FOLDER = "/opt/ergast"
 TMP_FOLDER = "/opt/airflow/tmp/ergast"
@@ -126,6 +127,7 @@ with DAG(
     start_date=datetime(2025, 1, 1),
     catchup=True,
 	schedule=None, # To run when airflow is set up
+    is_paused_upon_creation=False,
 ) as dag:
 
     setup_task = PythonOperator(
@@ -159,6 +161,12 @@ with DAG(
         bash_command=f'rm -rf {TMP_FOLDER}',
     )
 
+    trigger_meteostat_etl_dag = TriggerDagRunOperator(
+        task_id='trigger_metetostat_etl_task',
+        trigger_dag_id='Meteostat_ETL',
+        wait_for_completion=False,
+    )
 
     setup_task >> extract_task >> load_to_db_task >> filter_in_db_task >> cleanup_task
     # setup_task >> extract_task >> clean_nulls_task >> load_to_db_task >> filter_in_db_task
+    load_to_db_task >> trigger_meteostat_etl_dag

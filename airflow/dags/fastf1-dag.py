@@ -9,7 +9,7 @@ import glob
 import pandas as pd
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.providers.standard.operators.bash_operator import BashOperator
+from airflow.providers.standard.operators.bash import BashOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.exceptions import AirflowSkipException
 from airflow.providers.postgres.hooks.postgres import PostgresHook
@@ -40,8 +40,8 @@ def get_telemetry_and_lap_data_callable(**context):
     conf = dag_run.conf
 
     print("Data from conf:", conf.get("data"))
-    year = conf.get("year")
-    round = conf.get("round")
+    year = int(conf.get("year"))
+    round = int(conf.get("round"))
     name = conf.get("name")
 
     event = fastf1.get_event(year, round)
@@ -58,7 +58,7 @@ def get_telemetry_and_lap_data_callable(**context):
         try:
             session = fastf1.get_session(year, event_name, session_name)
 
-            session.load(laps=True, weather=True, messages=True, telemetry=True)
+            session.load(laps=True, weather=False, messages=False, telemetry=True)
             logging.info(f"Loaded basic data for {session_identifier}")
 
             # precise telemetry is in car_data, pos_data, etc.
@@ -99,21 +99,24 @@ def get_telemetry_and_lap_data_callable(**context):
 
                 sess_tel_dfs_concat = pd.concat(sess_tel_dfs, ignore_index=True)
                 sess_tel_dfs_concat.to_csv(os.path.join(TMP_FOLDER, f'telemetry_{session_identifier}.csv'))
+                logging.info(f"Saved {os.path.join(TMP_FOLDER, f'telemetry_{session_identifier}.csv')}")
         except Exception as e:
             pass
 
     sess_lap_dfs_concat = pd.concat(lap_dfs, ignore_index=True)
     sess_lap_dfs_concat.to_csv(os.path.join(TMP_FOLDER, f"laps_{year}_{round}.csv"))
+    logging.info(f"Saved {os.path.join(TMP_FOLDER, f"laps_{year}_{round}.csv")}")
 
 def normalize_telemetry_callable(**context):
     dag_run = context["dag_run"]
     conf = dag_run.conf
 
-    year = conf.get("year")
-    round = conf.get("round")
+    year = int(conf.get("year"))
+    round = int(conf.get("round"))
     name = conf.get("name")
 
     telemetry_files = glob.glob(os.path.join(TMP_FOLDER, 'telemetry_*.csv'))
+    print(telemetry_files)
     tel_dfs = []
 
     for tel_file in telemetry_files:
@@ -136,11 +139,11 @@ def load_data_to_postgres_callable(**context):
     dag_run = context["dag_run"]
     conf = dag_run.conf
 
-    year = conf.get("year")
-    round = conf.get("round")
+    year = int(conf.get("year"))
+    round = int(conf.get("round"))
     name = conf.get("name")
 
-    temp_csvs = [f"{year}_{round}_laps.csv", f"telemetry_{year}_{round}.csv"]
+    temp_csvs = [f"laps_{year}_{round}.csv", f"telemetry_{year}_{round}.csv"]
 
     pg_hook = PostgresHook(postgres_conn_id=FASTF1_DW_CONN_ID)
     engine = pg_hook.get_sqlalchemy_engine()
@@ -149,6 +152,7 @@ def load_data_to_postgres_callable(**context):
         table_name = csv_name.split('_')[0]
 
         try:
+            logging.info(f"Loading {table_name}...")
             df = pd.read_csv(os.path.join(TMP_FOLDER, csv_name))
 
             df.to_sql(
@@ -156,7 +160,8 @@ def load_data_to_postgres_callable(**context):
                 con=engine,
                 if_exists='replace',
                 index=False,
-                chunksize=1000
+                chunksize=1000,
+                method='multi'
             )
             logging.info(f"Loaded data into {table_name} (if_exists=replace).")
         except Exception as e:
@@ -172,9 +177,10 @@ with DAG(
         "retry_delay": timedelta(seconds=10),
     },
     description='Gets data for a selected weekend from the FastF1 API',
-    schedule=None,
-    catchup=False,
-    start_date=datetime(2025, 1, 1), # Has to be earlier than the logical/execution_date of the POST request.
+    start_date=datetime(2025, 1, 1),
+    catchup=True,
+	schedule=None, # To run when airflow is set up
+    is_paused_upon_creation=False,
 ) as dag:
     get_data_for_weekend_task = PythonOperator(
         task_id="get_data_for_weekend_task",
@@ -195,4 +201,4 @@ with DAG(
         bash_command=f'rm -rf {TMP_FOLDER}',
     )
 
-    get_data_for_weekend_task >> normalize_telemetry_task >> load_to_db_task
+    get_data_for_weekend_task >> normalize_telemetry_task >> load_to_db_task >> cleanup_task
