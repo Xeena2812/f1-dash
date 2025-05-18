@@ -107,7 +107,6 @@ def get_telemetry_and_lap_data_callable(**context):
                 else:
                     logging.info(f"No telemetry saved for any driver in {session_identifier}")
 
-                # print(sess_tel_dfs)
                 if sess_tel_dfs:
                     sess_tel_dfs_concat = pd.concat(sess_tel_dfs, ignore_index=True)
                     sess_tel_dfs_concat.to_csv(os.path.join(TMP_FOLDER, f'telemetry_{session_identifier}.csv'))
@@ -205,7 +204,7 @@ with DAG(
     description='Gets data for a selected weekend from the FastF1 API',
     start_date=datetime(2025, 1, 1),
     catchup=True,
-	schedule=None, # To run when airflow is set up
+	schedule=None,
     is_paused_upon_creation=False,
 ) as dag:
     get_data_for_weekend_task = PythonOperator(

@@ -39,7 +39,6 @@ def find_closest_stations(**kwargs):
         nearby_stations = stations.nearby(circuit['lat'], circuit['lng'])
         closest_station = nearby_stations.fetch(1)
         station_ids.append(closest_station.index[0])
-        # Add closest circuit id
 
     print(station_ids)
     kwargs['ti'].xcom_push(key='station_ids', value=station_ids)
@@ -154,4 +153,11 @@ with DAG(
         python_callable=load_hourly_data_to_postgres,
     )
 
-    download_stations_gz >> unzip_stations_gz >> load_stations_task >> find_closest_stations_task >> download_hourly_data_task >> load_hourly_data_task
+    cleanup_task = cleanup_task = BashOperator(
+        task_id="cleanup_task",
+        bash_command=f'rm -rf {TEMP_DIR}',
+    )
+
+
+
+    download_stations_gz >> unzip_stations_gz >> load_stations_task >> find_closest_stations_task >> download_hourly_data_task >> load_hourly_data_task >> cleanup_task
