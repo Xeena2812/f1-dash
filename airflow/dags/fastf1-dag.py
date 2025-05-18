@@ -92,8 +92,6 @@ def get_telemetry_and_lap_data_callable(**context):
                                 drv_tel['Year'] = year
                                 drv_tel['Round'] = event_round
                                 drv_tel['Session'] = session
-                                if 'Date' in drv_tel.columns:
-                                    drv_tel[['DateOnly', 'TimeOnly']] = drv_tel['Date'].str.split(' ', n=1, expand=True)
 
                                 sess_tel_dfs.append(drv_tel)
                                 logging.debug(f"Saved telemetry for driver {drv_abbr} in {session_identifier} with shape {drv_tel.shape}")
