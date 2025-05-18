@@ -39,6 +39,7 @@ def find_closest_stations(**kwargs):
         nearby_stations = stations.nearby(circuit['lat'], circuit['lng'])
         closest_station = nearby_stations.fetch(1)
         station_ids.append(closest_station.index[0])
+        # Add closest circuit id
 
     print(station_ids)
     kwargs['ti'].xcom_push(key='station_ids', value=station_ids)

@@ -80,7 +80,7 @@ services:
     ports:
       - 5432:5432
     volumes:
-      - postgres-db-volume:/var/lib/postgresql/data
+      - ./postgres-db-volume:/var/lib/postgresql/data
       - ./postgres-init-scripts:/docker-entrypoint-initdb.d
     healthcheck:
       test: [ "CMD", "pg_isready", "-U", "airflow" ]
@@ -267,5 +267,5 @@ services:
     depends_on:
       <<: *airflow-common-depends-on
 
-volumes:
-  postgres-db-volume:
+# volumes:
+#   postgres-db-volume: "./postgres-db-volume"

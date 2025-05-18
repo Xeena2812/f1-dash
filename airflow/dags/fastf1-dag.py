@@ -44,6 +44,14 @@ def get_telemetry_and_lap_data_callable(**context):
     round = int(conf.get("round"))
     name = conf.get("name")
 
+    # Check if (year, round) is already cached in cached_gps table
+    pg_hook = PostgresHook(postgres_conn_id=FASTF1_DW_CONN_ID)
+    sql = f"SELECT 1 FROM cached_gps WHERE year = {year} AND round = {round} LIMIT 1"
+    result = pg_hook.get_first(sql)
+    if result:
+        logging.info(f"Data for year={year}, round={round} already cached in cached_gps. Skipping.")
+        raise AirflowSkipException(f"Data for year={year}, round={round} already cached.")
+
     event = fastf1.get_event(year, round)
     print(event["EventName"])
     event_name = event['EventName']
@@ -97,15 +105,18 @@ def get_telemetry_and_lap_data_callable(**context):
                 else:
                     logging.info(f"No telemetry saved for any driver in {session_identifier}")
 
-                sess_tel_dfs_concat = pd.concat(sess_tel_dfs, ignore_index=True)
-                sess_tel_dfs_concat.to_csv(os.path.join(TMP_FOLDER, f'telemetry_{session_identifier}.csv'))
-                logging.info(f"Saved {os.path.join(TMP_FOLDER, f'telemetry_{session_identifier}.csv')}")
+                if sess_tel_dfs is not []:
+                    sess_tel_dfs_concat = pd.concat(sess_tel_dfs, ignore_index=True)
+                    sess_tel_dfs_concat.to_csv(os.path.join(TMP_FOLDER, f'telemetry_{session_identifier}.csv'))
+                    logging.info(f"Saved {os.path.join(TMP_FOLDER, f'telemetry_{session_identifier}.csv')}")
         except Exception as e:
-            pass
+            logging.error(f"Got Exception:\n{e}")
+            raise e
 
-    sess_lap_dfs_concat = pd.concat(lap_dfs, ignore_index=True)
-    sess_lap_dfs_concat.to_csv(os.path.join(TMP_FOLDER, f"laps_{year}_{round}.csv"))
-    logging.info(f"Saved {os.path.join(TMP_FOLDER, f"laps_{year}_{round}.csv")}")
+    if lap_dfs is not []:
+        sess_lap_dfs_concat = pd.concat(lap_dfs, ignore_index=True)
+        sess_lap_dfs_concat.to_csv(os.path.join(TMP_FOLDER, f"laps_{year}_{round}.csv"))
+        logging.info(f"Saved {os.path.join(TMP_FOLDER, f"laps_{year}_{round}.csv")}")
 
 def normalize_telemetry_callable(**context):
     dag_run = context["dag_run"]
@@ -167,6 +178,18 @@ def load_data_to_postgres_callable(**context):
             logging.error(f"Error loading data into {table_name}: {e}")
             raise
 
+def udpate_cached_table_callable(**context):
+    dag_run = context["dag_run"]
+    conf = dag_run.conf
+
+    year = int(conf.get("year"))
+    round = int(conf.get("round"))
+    name = conf.get("name")
+
+    pg_hook = PostgresHook(postgres_conn_id=FASTF1_DW_CONN_ID)
+    sql = f"INSERT INTO cached_gps (year, round, name) VALUES ({year}, {round}, {name})"
+    pg_hook.run(sql)
+    logging.info(f"Inserted (year={year}, round={round}) into cached_gps table.")
 
 with DAG(
     'FastF1_ETL',
@@ -195,9 +218,16 @@ with DAG(
         python_callable=load_data_to_postgres_callable,
     )
 
+    udpate_cached_table = PythonOperator(
+        task_id="udpate_cached_table_task",
+        python_callable=udpate_cached_table_callable,
+    )
+
+
     cleanup_task = cleanup_task = BashOperator(
         task_id="cleanup_task",
         bash_command=f'rm -rf {TMP_FOLDER}',
     )
 
     get_data_for_weekend_task >> normalize_telemetry_task >> load_to_db_task >> cleanup_task
+    load_to_db_task >> udpate_cached_table
