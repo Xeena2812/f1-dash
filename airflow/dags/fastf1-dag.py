@@ -25,7 +25,7 @@ MIN_YEAR = 2018
 MAX_YEAR = 2024
 
 def get_telemetry_and_lap_data_callable(**context):
-    SESSIONS_TO_GET = ['FP1', 'FP2', 'FP3', 'Q', 'S', 'SQ', 'R']
+    SESSIONS_TO_GET = ['Q', 'R']
 
     try:
         fastf1.Cache.enable_cache(FASTF1_CACHE_FOLDER)
@@ -105,7 +105,8 @@ def get_telemetry_and_lap_data_callable(**context):
                 else:
                     logging.info(f"No telemetry saved for any driver in {session_identifier}")
 
-                if sess_tel_dfs is not []:
+                # print(sess_tel_dfs)
+                if sess_tel_dfs:
                     sess_tel_dfs_concat = pd.concat(sess_tel_dfs, ignore_index=True)
                     sess_tel_dfs_concat.to_csv(os.path.join(TMP_FOLDER, f'telemetry_{session_identifier}.csv'))
                     logging.info(f"Saved {os.path.join(TMP_FOLDER, f'telemetry_{session_identifier}.csv')}")
@@ -113,7 +114,7 @@ def get_telemetry_and_lap_data_callable(**context):
             logging.error(f"Got Exception:\n{e}")
             raise e
 
-    if lap_dfs is not []:
+    if lap_dfs:
         sess_lap_dfs_concat = pd.concat(lap_dfs, ignore_index=True)
         sess_lap_dfs_concat.to_csv(os.path.join(TMP_FOLDER, f"laps_{year}_{round}.csv"))
         logging.info(f"Saved {os.path.join(TMP_FOLDER, f"laps_{year}_{round}.csv")}")
@@ -187,8 +188,8 @@ def udpate_cached_table_callable(**context):
     name = conf.get("name")
 
     pg_hook = PostgresHook(postgres_conn_id=FASTF1_DW_CONN_ID)
-    sql = f"INSERT INTO cached_gps (year, round, name) VALUES ({year}, {round}, {name})"
-    pg_hook.run(sql)
+    sql = "INSERT INTO cached_gps (year, round, name) VALUES (%s, %s, %s)"
+    pg_hook.run(sql, parameters=(year, round, name))
     logging.info(f"Inserted (year={year}, round={round}) into cached_gps table.")
 
 with DAG(
