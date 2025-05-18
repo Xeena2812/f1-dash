@@ -58,10 +58,10 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/plugins:/opt/airflow/plugins
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/tmp:/opt/airflow/tmp
-    - ${AIRFLOW_PROJ_DIR:-.}/ergast:/opt/ergast
+    # - ${AIRFLOW_PROJ_DIR:-.}/ergast:/opt/ergast
     - ${AIRFLOW_PROJ_DIR:-.}/fastf1-data:/opt/fastf1-data
     - ${AIRFLOW_PROJ_DIR:-.}/fastf1-cache:/opt/fastf1-cache
-    - ${AIRFLOW_PROJ_DIR:-.}/meteostat:/opt/meteostat
+    # - ${AIRFLOW_PROJ_DIR:-.}/meteostat:/opt/meteostat
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     # redis:

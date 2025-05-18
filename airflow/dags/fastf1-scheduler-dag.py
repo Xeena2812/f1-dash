@@ -98,7 +98,7 @@ with DAG(
     description='Schedules FastF1 ETL jobs for uncached events',
     start_date=datetime(2025, 1, 1),
     catchup=False,
-    schedule=timedelta(minutes=5),
+    schedule=timedelta(minutes=10),
     is_paused_upon_creation=False,
 ) as dag:
 

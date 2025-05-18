@@ -26,16 +26,16 @@ def setup_directories_callable():
     if os.path.exists(TMP_FOLDER):
         shutil.rmtree(TMP_FOLDER)
     os.makedirs(TMP_FOLDER, exist_ok=True)
-    if not os.path.exists(ERGAST_FOLDER) or not os.listdir(ERGAST_FOLDER):
-        raise FileNotFoundError(f"ERGAST_FOLDER {ERGAST_FOLDER} not found or empty.")
+    # if not os.path.exists(ERGAST_FOLDER) or not os.listdir(ERGAST_FOLDER):
+    #     raise FileNotFoundError(f"ERGAST_FOLDER {ERGAST_FOLDER} not found or empty.")
     logging.info(f"Directories ready. TMP_FOLDER: {TMP_FOLDER}")
 
 def extract_csv_to_parquet_callable(**kwargs):
     processed_files_info = []
-    for filename in os.listdir(ERGAST_FOLDER):
+    for filename in os.listdir(TMP_FOLDER):
         if filename.lower().endswith(".csv"):
             table_name = os.path.splitext(filename)[0].lower()
-            csv_path = os.path.join(ERGAST_FOLDER, filename)
+            csv_path = os.path.join(TMP_FOLDER, filename)
             parquet_path = os.path.join(TMP_FOLDER, f"{table_name}.parquet")
             try:
                 df = pd.read_csv(csv_path, keep_default_na=True, na_values=['\\N', 'NA', 'N/A', ''])
@@ -71,6 +71,13 @@ def clean_missing_data_callable(**kwargs):
             # original_rows = len(df)
             # df.dropna(inplace=True)
             # cleaned_rows = len(df)
+            if table_name == "drivers" and "number" in df.columns:
+                df = df[~df["number"].isnull()]
+            for col in df.columns:
+                if df[col].dtype == object:
+                    df[col].fillna("", inplace=True)
+                else:
+                    df[col].fillna(0, inplace=True)
 
             df.to_parquet(parquet_path, index=False)
             logging.info(f"Cleaned data for {table_name}")
@@ -139,6 +146,16 @@ with DAG(
         python_callable=setup_directories_callable,
     )
 
+    download_ergast_zip = BashOperator(
+        task_id='download_ergast_zip',
+        bash_command=f'curl -o {TMP_FOLDER}/f1db_csv.zip https://ergast.com/downloads/f1db_csv.zip',
+    )
+
+    unzip_ergast = BashOperator(
+        task_id='unzip_ergast',
+        bash_command=f'unzip {TMP_FOLDER}/f1db_csv.zip -d {TMP_FOLDER}',
+    )
+
     extract_task = PythonOperator(
         task_id="extract_task",
         python_callable=extract_csv_to_parquet_callable,
@@ -172,5 +189,5 @@ with DAG(
     )
 
     # setup_task >> extract_task >> load_to_db_task >> filter_in_db_task >> cleanup_task
-    setup_task >> extract_task >> clean_nulls_task >> load_to_db_task >> filter_in_db_task >> cleanup_task
+    setup_task >> download_ergast_zip >> unzip_ergast >> extract_task >> clean_nulls_task >> load_to_db_task >> filter_in_db_task >> cleanup_task
     load_to_db_task >> trigger_meteostat_etl_dag

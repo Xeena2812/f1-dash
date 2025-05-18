@@ -92,6 +92,8 @@ def get_telemetry_and_lap_data_callable(**context):
                                 drv_tel['Year'] = year
                                 drv_tel['Round'] = event_round
                                 drv_tel['Session'] = session
+                                if 'Date' in drv_tel.columns:
+                                    drv_tel[['DateOnly', 'TimeOnly']] = drv_tel['Date'].str.split(' ', n=1, expand=True)
 
                                 sess_tel_dfs.append(drv_tel)
                                 logging.debug(f"Saved telemetry for driver {drv_abbr} in {session_identifier} with shape {drv_tel.shape}")
@@ -141,11 +143,12 @@ def normalize_telemetry_callable(**context):
         except Exception as e:
             logging.warning(f"Could not normalize telemetry file {tel_file}: {e}")
 
-    df_concat = pd.concat(tel_dfs, ignore_index=True)
-    df_concat.drop(df_concat.columns[[0]], axis=1, inplace=True)
-    df_concat.to_csv(os.path.join(TMP_FOLDER, f'telemetry_{year}_{round}.csv'))
+    if tel_dfs:
+        df_concat = pd.concat(tel_dfs, ignore_index=True)
+        df_concat.drop(df_concat.columns[[0]], axis=1, inplace=True)
+        df_concat.to_csv(os.path.join(TMP_FOLDER, f'telemetry_{year}_{round}.csv'))
+        logging.info(f"Normalized telemetry saved for {name} with shape {df_concat.shape}")
 
-    logging.info(f"Normalized telemetry saved for {name} with shape {df_concat.shape}")
 
 def load_data_to_postgres_callable(**context):
     dag_run = context["dag_run"]
@@ -177,7 +180,7 @@ def load_data_to_postgres_callable(**context):
             logging.info(f"Loaded data into {table_name} (if_exists=replace).")
         except Exception as e:
             logging.error(f"Error loading data into {table_name}: {e}")
-            raise
+
 
 def udpate_cached_table_callable(**context):
     dag_run = context["dag_run"]
